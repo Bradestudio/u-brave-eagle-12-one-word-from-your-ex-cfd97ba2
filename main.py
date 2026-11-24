@@ -1,85 +1,70 @@
 #!/usr/bin/env python3
-"""One Word From Your Ex — the single word my ex would use to describe me.
+"""Demo -- the one word my ex would use to describe me.
 
-Writes exactly one word ("Demo") to /output/entry.txt.
-Standard library only. No network, no reading of files outside this
-program, no local imports. The write is atomic (temp file + rename)
-and verified by reading the file back byte-for-byte.
+For the make.fun bounty "One Word From Your Ex". The program drops a
+single word into /output/entry.txt and does nothing else. It uses only
+the standard library, opens no other files, and never touches the
+network, so a second run writes byte-for-byte the same file.
 """
 
 import os
 import sys
-import tempfile
-import unicodedata
 
-ENTRY = "Demo"
-
-MAX_CHARS = 24
+WORD = "Demo"
+LIMIT = 24
 
 
-def validate(text):
-    """Check the entry against the gate: 1-24 chars, one word, not blank."""
-    if not isinstance(text, str):
-        raise ValueError("entry must be text")
-    if not 1 <= len(text) <= MAX_CHARS:
-        raise ValueError(
-            "entry must be 1-%d characters, got %d" % (MAX_CHARS, len(text))
-        )
-    if text != text.strip():
-        raise ValueError("entry must not have leading or trailing whitespace")
-    if not text.strip():
-        raise ValueError("entry must not be whitespace only")
-    if "\n" in text or "\r" in text:
-        raise ValueError("entry must be a single word")
-    if " " in text or "\t" in text:
-        raise ValueError("entry must be exactly one word, no spaces")
-    if not text.isalpha():
-        raise ValueError("entry must be letters only, one plain word")
-    for char in text:
-        if unicodedata.category(char) == "Cc":
-            raise ValueError(
-                "entry must not contain control character U+%04X" % ord(char)
-            )
-    # UTF-8 must round-trip exactly: encode, decode, compare.
-    if text.encode("utf-8").decode("utf-8") != text:
-        raise ValueError("entry is not valid UTF-8 text")
-    return text
+def check_word(word):
+    """Refuse anything that is not one plain word within the gate."""
+    if not isinstance(word, str):
+        raise TypeError("word must be text, got %s" % type(word).__name__)
+    if word == "":
+        raise ValueError("word must not be empty")
+    if len(word) > LIMIT:
+        raise ValueError("word is %d chars, limit is %d" % (len(word), LIMIT))
+    if word.strip() != word:
+        raise ValueError("word must not start or end with whitespace")
+    if len(word.split()) != 1:
+        raise ValueError("word must be a single token, no spaces inside")
+    if not word.isalpha():
+        raise ValueError("word must be letters only")
+    if not word.isascii():
+        raise ValueError("word must be plain ASCII letters")
+    for letter in word:
+        if ord(letter) < 0x20 or ord(letter) == 0x7F:
+            raise ValueError("word must not hold control characters")
+    word.encode("utf-8")
+    return word
 
 
-def write_entry(output_dir):
-    """Atomically write the validated entry and verify it by read-back."""
-    text = validate(ENTRY)
-    os.makedirs(output_dir, exist_ok=True)
-    target = os.path.join(output_dir, "entry.txt")
-    data = text.encode("utf-8")
-    fd, tmp_path = tempfile.mkstemp(
-        dir=output_dir, prefix=".entry-", suffix=".tmp"
-    )
+def save_word(word, folder):
+    """Write the word to entry.txt through a staging file, then confirm."""
+    word = check_word(word)
+    os.makedirs(folder, exist_ok=True)
+    target = os.path.join(folder, "entry.txt")
+    staged = target + ".staging"
+    payload = word.encode("utf-8")
+    with open(staged, "wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(staged, target)
+    folder_fd = os.open(folder, os.O_RDONLY)
     try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, target)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+        os.fsync(folder_fd)
+    finally:
+        os.close(folder_fd)
     with open(target, "rb") as handle:
-        read_back = handle.read()
-    if read_back != data:
-        raise ValueError("read-back mismatch: entry.txt differs from entry")
-    if read_back.decode("utf-8") != text:
-        raise ValueError("read-back mismatch: entry.txt is not the entry text")
-    return len(text)
+        stored = handle.read()
+    if stored != payload:
+        raise ValueError("entry.txt does not match the word")
+    return len(word)
 
 
 def main():
-    output_dir = os.environ.get("OUTPUT_DIR", "/output")
-    count = write_entry(output_dir)
-    print("Wrote %d characters to %s" % (count, os.path.join(output_dir, "entry.txt")))
+    folder = os.environ.get("OUTPUT_DIR", "/output")
+    size = save_word(WORD, folder)
+    print("entry.txt holds %d characters" % size)
     return 0
 
 
